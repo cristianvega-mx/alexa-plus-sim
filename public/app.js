@@ -150,7 +150,7 @@ async function send(words) {
 
 const isoDate = /^\d{4}-\d{2}-\d{2}/;
 // Identifiers and bookkeeping fields mean nothing to the person looking at the screen.
-const hidden = /^(id|read|uri|mailto|calendarUri)$|Id$|Uri$/;
+const hidden = /^(id|read|uri|mailto|calendarUri|spoken)$|Id$|Uri$/;
 // In a list, each item shows its most telling fields first.
 const leading = ['title', 'subject', 'what', 'term', 'name'];
 
