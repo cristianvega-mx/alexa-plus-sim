@@ -20,7 +20,9 @@ export type AgentListener = {
 };
 
 function systemPrompt(language: string, serverName: string, instructions?: string): string {
-  const today = new Intl.DateTimeFormat(language, { dateStyle: 'full', timeZone: 'America/Chicago' }).format(new Date());
+  // SIM_TODAY=YYYY-MM-DD pins the date for demos whose sample data lives on fixed dates.
+  const now = process.env.SIM_TODAY ? new Date(`${process.env.SIM_TODAY}T12:00:00-05:00`) : new Date();
+  const today = new Intl.DateTimeFormat(language, { dateStyle: 'full', timeZone: 'America/Chicago' }).format(now);
   return [
     `You are Alexa+ on an Echo Show in a family's kitchen. Always answer in the language of ${language}, using "usted".`,
     'Everything you write is spoken aloud: at most two short sentences, no lists, no markdown, no URLs, no emoji.',

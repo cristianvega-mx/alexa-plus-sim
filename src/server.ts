@@ -1,79 +1,74 @@
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { Agent } from './agent.js';
-import { captionsEnabled, translateCaption } from './captions.js';
-import { McpBridge, type FormAnswer } from './mcp.js';
+import type { FormAnswer } from './mcp.js';
+import { Session } from './session.js';
 
 const port = Number(process.env.PORT ?? 4000);
+const bindAddress = process.env.SIM_BIND ?? '127.0.0.1';
 const language = process.env.SIM_LANGUAGE ?? 'es-MX';
 const mcpUrl = new URL(process.env.MCP_SERVER_URL ?? 'http://127.0.0.1:3000/mcp');
 const publicDir = fileURLToPath(new URL('../public/', import.meta.url));
 
-// Everything the screen needs arrives as Server-Sent Events; one kitchen, so every open tab sees the same device.
-const screens = new Set<ServerResponse>();
-function broadcast(event: Record<string, unknown>): void {
-  const data = `data: ${JSON.stringify(event)}\n\n`;
-  for (const screen of screens) screen.write(data);
+// Optional protection for a public deployment: SIM_BASIC_AUTH=user:password asks every visitor for it,
+// and SIM_MAX_TURNS_PER_HOUR caps how many requests reach the model in total.
+const basicAuth = process.env.SIM_BASIC_AUTH ? Buffer.from(`Basic ${Buffer.from(process.env.SIM_BASIC_AUTH).toString('base64')}`) : undefined;
+const maxTurnsPerHour = Number(process.env.SIM_MAX_TURNS_PER_HOUR ?? 300);
+const recentTurns: number[] = [];
+
+// Every browser gets its own simulated device, found again through a cookie.
+const sessions = new Map<string, Session>();
+const sessionCookie = 'sim_session';
+const idleLimitMs = 60 * 60 * 1000;
+
+function cookieValue(req: IncomingMessage, name: string): string | undefined {
+  return req.headers.cookie
+    ?.split(';')
+    .map(part => part.trim().split('='))
+    .find(([key]) => key === name)?.[1];
 }
 
-// A caption (what the person said or what Alexa says), followed by its translation when captions are on.
-let captionCount = 0;
-function caption(type: 'user' | 'say', text: string): void {
-  const id = ++captionCount;
-  broadcast({ type, id, text });
-  if (!captionsEnabled) return;
-  translateCaption(text)
-    .then(translation => translation && broadcast({ type: 'caption-translation', id, of: type, text: translation }))
-    .catch(error => console.error('caption translation failed:', (error as Error).message));
+function sessionFor(req: IncomingMessage, res: ServerResponse): Session {
+  const existing = cookieValue(req, sessionCookie);
+  let session = existing ? sessions.get(existing) : undefined;
+  if (!session) {
+    const id = randomUUID();
+    session = new Session(mcpUrl, language);
+    session.ready.catch(error => console.error('MCP connection failed:', (error as Error).message));
+    sessions.set(id, session);
+    const secure = req.headers['x-forwarded-proto'] === 'https' ? '; Secure' : '';
+    res.setHeader('set-cookie', `${sessionCookie}=${id}; Path=/; HttpOnly; SameSite=Lax${secure}`);
+  }
+  session.lastSeen = Date.now();
+  return session;
 }
 
-// Forms appear on screen and Alexa reads the first line of the question (the details stay on screen).
-const mcp = new McpBridge(mcpUrl, form => {
-  broadcast({ type: 'form', ...form });
-  caption('say', `${form.message.split('\n')[0]} Puede tocar Aceptar o decir sí.`);
-});
-const agent = new Agent(mcp, language, {
-  toolCall: (name, args) => broadcast({ type: 'tool-call', name, args }),
-  toolResult: async (name, args, result) => {
-    const app = result.isError ? undefined : await mcp.appFor(name);
-    broadcast({ type: 'tool-result', name, args, isError: result.isError === true, data: result.structuredContent ?? null, result, app });
-  },
-  say: text => caption('say', text)
-});
-
-let busy = false;
-// \b does not work after accented letters ("sí"), so the words end at the first non-letter instead.
-const yes = /^(s[ií]|claro|ok|okay|de acuerdo|gu[aá]rd[ae]lo|adelante|yes)(?!\p{L})/iu;
-const no = /^(no|cancela|cancelar|mejor no)(?!\p{L})/iu;
-
-async function handleUtterance(text: string): Promise<void> {
-  caption('user', text);
-  // A spoken yes/no answers a form that is on screen, with the choices already selected.
-  const openForm = mcp.openFormId;
-  if (openForm) {
-    const answer: FormAnswer | undefined = yes.test(text) ? { action: 'accept' } : no.test(text) ? { action: 'decline' } : undefined;
-    if (answer) {
-      broadcast({ type: 'form-voice-answer', id: openForm, action: answer.action });
-      return;
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of sessions) {
+    if (session.screens.size === 0 && now - session.lastSeen > idleLimitMs) {
+      sessions.delete(id);
+      void session.close();
     }
   }
-  if (busy) {
-    caption('say', 'Un momento, sigo con lo anterior.');
-    return;
-  }
-  busy = true;
-  broadcast({ type: 'thinking', on: true });
-  try {
-    await agent.turn(text);
-  } catch (error) {
-    console.error(error);
-    caption('say', 'Perdón, tuve un problema. ¿Me lo repite?');
-  } finally {
-    busy = false;
-    broadcast({ type: 'thinking', on: false });
-  }
+}, 10 * 60 * 1000).unref();
+
+function authorized(req: IncomingMessage, res: ServerResponse): boolean {
+  if (!basicAuth) return true;
+  const given = Buffer.from(req.headers.authorization ?? '');
+  if (given.length === basicAuth.length && timingSafeEqual(given, basicAuth)) return true;
+  res.writeHead(401, { 'www-authenticate': 'Basic realm="Alexa+ simulator", charset="UTF-8"' }).end();
+  return false;
+}
+
+function takeTurnSlot(): boolean {
+  const hourAgo = Date.now() - 3_600_000;
+  while (recentTurns.length > 0 && recentTurns[0]! < hourAgo) recentTurns.shift();
+  if (recentTurns.length >= maxTurnsPerHour) return false;
+  recentTurns.push(Date.now());
+  return true;
 }
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -109,34 +104,54 @@ async function serveStatic(path: string, res: ServerResponse): Promise<void> {
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
   try {
+    if (url.pathname === '/healthz') {
+      res.writeHead(200, { 'content-type': 'text/plain' }).end('ok');
+      return;
+    }
+    if (!authorized(req, res)) return;
     if (req.method === 'GET' && url.pathname === '/api/events') {
+      const session = sessionFor(req, res);
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' });
-      res.write(`data: ${JSON.stringify({ type: 'hello', server: mcp.serverName, language, tools: mcp.tools.map(t => t.name) })}\n\n`);
-      screens.add(res);
-      req.on('close', () => screens.delete(res));
+      try {
+        await session.ready;
+      } catch {
+        res.end(`data: ${JSON.stringify({ type: 'error', message: 'The MCP server is not reachable.' })}\n\n`);
+        return;
+      }
+      const tools = session.mcp.tools.map(tool => tool.name);
+      res.write(`data: ${JSON.stringify({ type: 'hello', server: session.mcp.serverName, language, tools })}\n\n`);
+      session.screens.add(res);
+      req.on('close', () => session.screens.delete(res));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/utterance') {
+      const session = sessionFor(req, res);
       const { text } = await readJson(req);
-      if (typeof text !== 'string' || !text.trim()) {
+      if (typeof text !== 'string' || !text.trim() || text.length > 500) {
         res.writeHead(400).end();
         return;
       }
-      void handleUtterance(text.trim());
+      if (!takeTurnSlot()) {
+        session.caption('say', 'Estoy recibiendo demasiadas preguntas. Intente de nuevo en unos minutos.');
+        res.writeHead(429).end();
+        return;
+      }
+      void session.handleUtterance(text.trim());
       res.writeHead(202).end();
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/form') {
+      const session = sessionFor(req, res);
       const { id, action, content } = await readJson(req);
       const answer = { action, content } as FormAnswer;
-      const ok = typeof id === 'string' && ['accept', 'decline', 'cancel'].includes(String(action)) && mcp.answerForm(id, answer);
-      if (ok) broadcast({ type: 'form-closed', id });
+      const ok =
+        typeof id === 'string' && ['accept', 'decline', 'cancel'].includes(String(action)) && session.mcp.answerForm(id, answer);
+      if (ok) session.broadcast({ type: 'form-closed', id });
       res.writeHead(ok ? 204 : 404).end();
       return;
     }
     if (req.method === 'POST' && url.pathname === '/api/reset') {
-      agent.reset();
-      broadcast({ type: 'reset' });
+      sessionFor(req, res).reset();
       res.writeHead(204).end();
       return;
     }
@@ -151,7 +166,6 @@ const server = createServer(async (req, res) => {
   }
 });
 
-await mcp.connect();
-server.listen(port, '127.0.0.1', () => {
-  console.log(`Alexa+ simulator on http://127.0.0.1:${port} — skill "${mcp.serverName}" with ${mcp.tools.length} tools`);
+server.listen(port, bindAddress, () => {
+  console.log(`Alexa+ simulator on http://${bindAddress}:${port} — MCP server ${mcpUrl.href}`);
 });
