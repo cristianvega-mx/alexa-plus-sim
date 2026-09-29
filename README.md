@@ -12,7 +12,7 @@ deployed skill. This runs on a laptop in one command.
 - **Agent on Amazon Bedrock.** A Converse tool-use loop (Amazon Nova Pro by default) turns what the person says into
   MCP tool calls, keeps the conversation between turns and answers in at most two spoken sentences.
 - **Voice in and out.** Chrome's Web Speech API for listening (push-to-talk button or the space bar) and speaking;
-  captions show what was heard and what Alexa says.
+  captions show what was heard and what Alexa says, optionally with subtitles in a second language.
 - **Elicitation on screen.** When a tool answers with an `input_required` result (MCP protocol 2026-07-28), the form
   appears on the screen: checkboxes, toggles, choices. The person taps *Aceptar* or simply says "sí" or "no".
 - **MCP Apps.** Tools that declare `_meta.ui.resourceUri` get their own UI: the simulator fetches the `ui://` resource
@@ -37,6 +37,8 @@ npm start               # http://127.0.0.1:4000 — use Chrome for speech recogn
 | `SIM_MODEL_ID` | `us.amazon.nova-pro-v1:0` | Model that plays Alexa+; must support tool use. |
 | `MCP_SERVER_URL` | `http://127.0.0.1:3000/mcp` | The MCP server to test. |
 | `SIM_LANGUAGE` | `es-MX` | Language Alexa+ listens and speaks in. |
+| `SIM_CAPTION_LANGUAGE` | (off) | Adds subtitles in a second language, e.g. `English` for a Spanish demo. |
+| `SIM_CAPTION_MODEL_ID` | `global.amazon.nova-2-lite-v1:0` | Model that translates the subtitles. |
 | `PORT` | `4000` | Where the simulator is served (bound to 127.0.0.1). |
 
 ## How it works

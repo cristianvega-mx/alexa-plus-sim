@@ -187,7 +187,8 @@ function prettyKey(key) {
 }
 
 function definitionList(object) {
-  const entries = Object.entries(object).filter(([key]) => !hidden.test(key));
+  const empty = value => value === null || value === '' || (Array.isArray(value) && value.length === 0);
+  const entries = Object.entries(object).filter(([key, value]) => !hidden.test(key) && !empty(value));
   return el('dl', {}, entries.flatMap(([key, value]) => [el('dt', {}, prettyKey(key)), el('dd', {}, formatValue(value))]));
 }
 
