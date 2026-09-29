@@ -53,28 +53,30 @@ function spokenText(content: ContentBlock[]): string {
     .trim();
 }
 
-// The model gets the tool's own words (plain text blocks) and its structured data.
+// The model gets the tool's structured data when it has some, and otherwise the tool's own words.
+// Never both: when one tool result mixes text and JSON blocks, Nova Pro ends the turn without a word
+// and in later turns writes tool calls as plain text instead of calling the tools.
 function toolResultBlock(toolUseId: string, result: CallToolResult): ContentBlock {
+  const status = result.isError ? 'error' : 'success';
+  if (result.structuredContent) {
+    return { toolResult: { toolUseId, status, content: [{ json: result.structuredContent as DocumentType }] } };
+  }
   const texts = result.content.flatMap(block => {
     if (block.type === 'resource_link') return [`[resource ${block.uri}]`];
-    if (block.type !== 'text') return [];
-    return result.structuredContent && block.text.trim().startsWith('{') ? [] : [block.text];
+    return block.type === 'text' ? [block.text] : [];
   });
-  const content: NonNullable<NonNullable<ContentBlock['toolResult']>['content']> = texts.map(text => ({ text }));
-  if (result.structuredContent) content.push({ json: result.structuredContent as DocumentType });
-  if (content.length === 0) content.push({ text: '(empty)' });
-  return { toolResult: { toolUseId, status: result.isError ? 'error' : 'success', content } };
+  return { toolResult: { toolUseId, status, content: [{ text: texts.join('\n') || '(empty)' }] } };
 }
 
 // Nova sometimes ends a turn right after a tool result (for example after a confirmation form) without
 // saying anything. The person still needs an answer, so the tool's own words are used instead.
 function fallbackReply(result: CallToolResult | undefined): string {
-  if (!result) return '';
+  if (!result) return 'Perdón, no le entendí. ¿Me lo repite?';
   const spoken = (result.structuredContent as { spoken?: unknown } | undefined)?.spoken;
   if (typeof spoken === 'string' && spoken.trim()) return spoken.trim();
   const sentence = result.content.find(block => block.type === 'text' && !block.text.trim().startsWith('{'));
-  if (sentence?.type === 'text') return spokenText([{ text: sentence.text }]);
-  return result.isError ? 'Perdón, no pude hacerlo.' : 'Listo.';
+  const said = sentence?.type === 'text' ? spokenText([{ text: sentence.text }]) : '';
+  return said || (result.isError ? 'Perdón, no pude hacerlo.' : 'Listo.');
 }
 
 // A Bedrock Converse tool-use loop over the MCP server's tools, keeping the conversation between turns.
@@ -129,8 +131,10 @@ export class Agent {
         if (!text) {
           console.warn('empty reply from the model:', JSON.stringify(message.content));
           text = fallbackReply(lastResult);
+          // Bedrock rejects an empty assistant message in later turns, so the history keeps what was said instead.
+          message.content = [{ text }];
         }
-        if (text) this.listener.say(text);
+        this.listener.say(text);
         return;
       }
 
