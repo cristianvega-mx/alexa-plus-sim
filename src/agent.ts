@@ -66,6 +66,17 @@ function toolResultBlock(toolUseId: string, result: CallToolResult): ContentBloc
   return { toolResult: { toolUseId, status: result.isError ? 'error' : 'success', content } };
 }
 
+// Nova sometimes ends a turn right after a tool result (for example after a confirmation form) without
+// saying anything. The person still needs an answer, so the tool's own words are used instead.
+function fallbackReply(result: CallToolResult | undefined): string {
+  if (!result) return '';
+  const spoken = (result.structuredContent as { spoken?: unknown } | undefined)?.spoken;
+  if (typeof spoken === 'string' && spoken.trim()) return spoken.trim();
+  const sentence = result.content.find(block => block.type === 'text' && !block.text.trim().startsWith('{'));
+  if (sentence?.type === 'text') return spokenText([{ text: sentence.text }]);
+  return result.isError ? 'Perdón, no pude hacerlo.' : 'Listo.';
+}
+
 // A Bedrock Converse tool-use loop over the MCP server's tools, keeping the conversation between turns.
 export class Agent {
   private messages: Message[] = [];
@@ -96,6 +107,7 @@ export class Agent {
   async turn(userText: string): Promise<void> {
     this.messages.push({ role: 'user', content: [{ text: userText }] });
     const system = systemPrompt(this.language, this.mcp.serverName, this.mcp.client.getInstructions());
+    let lastResult: CallToolResult | undefined;
 
     for (let step = 0; step < maxSteps; step++) {
       const response = await bedrock.send(
@@ -113,7 +125,11 @@ export class Agent {
 
       const toolUses = message.content.flatMap(block => (block.toolUse ? [block.toolUse] : []));
       if (response.stopReason !== 'tool_use' || toolUses.length === 0) {
-        const text = spokenText(message.content);
+        let text = spokenText(message.content);
+        if (!text) {
+          console.warn('empty reply from the model:', JSON.stringify(message.content));
+          text = fallbackReply(lastResult);
+        }
         if (text) this.listener.say(text);
         return;
       }
@@ -125,6 +141,7 @@ export class Agent {
         const result = await this.mcp.callTool(use.name!, args);
         await this.listener.toolResult(use.name!, args, result);
         results.push(toolResultBlock(use.toolUseId!, result));
+        lastResult = result;
       }
       this.messages.push({ role: 'user', content: results });
     }
