@@ -291,6 +291,14 @@ body {
   font-weight: 500;
 }
 
+/* Second-language subtitles (SIM_CAPTION_LANGUAGE) */
+.captions .caption-translation {
+  margin-top: 0.05em;
+  color: #ffd166;
+  font-size: 0.78em;
+  font-style: italic;
+}
+
 /* The light bar along the bottom edge of the screen */
 .light-bar {
   position: absolute;

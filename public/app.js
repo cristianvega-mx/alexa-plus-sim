@@ -8,6 +8,8 @@ const text = $('text');
 const mic = $('mic');
 
 let language = 'es-MX';
+// Which caption each translation belongs to; late translations of older lines are dropped.
+const captionIds = { user: 0, say: 0 };
 let thinking = false;
 let speaking = false;
 let listening = false;
@@ -334,8 +336,6 @@ function showForm(request) {
   const card = el('article', { class: 'card form-card' }, [el('div', { class: 'card-kicker' }, 'Confirmación'), form]);
   openForms.set(request.id, { card, form, schema: request.schema });
   content.replaceChildren(card);
-  // Read the first line only; the details are on screen.
-  say(`${request.message.split('\n')[0]} Puede tocar Aceptar o decir sí.`);
 }
 
 // ---------- MCP traffic panel ----------
@@ -362,9 +362,19 @@ events.onmessage = message => {
       logEntry('result', `connected · ${event.tools.length} tools`, event.tools);
       break;
     case 'user':
+      captionIds.user = event.id;
       showUserCaption(event.text);
+      $('caption-user-translation').hidden = true;
       $('caption-alexa').hidden = true;
+      $('caption-alexa-translation').hidden = true;
       break;
+    case 'caption-translation': {
+      const target = event.of === 'user' ? 'caption-user-translation' : 'caption-alexa-translation';
+      if (event.id !== captionIds[event.of === 'user' ? 'user' : 'say']) break;
+      $(target).textContent = event.text;
+      $(target).hidden = false;
+      break;
+    }
     case 'thinking':
       thinking = event.on;
       updateLight();
@@ -388,6 +398,8 @@ events.onmessage = message => {
       logEntry('call', '→ retry with inputResponses');
       break;
     case 'say':
+      captionIds.say = event.id;
+      $('caption-alexa-translation').hidden = true;
       say(event.text);
       break;
     case 'reset':

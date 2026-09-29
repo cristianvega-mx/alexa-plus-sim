@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { extname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Agent } from './agent.js';
+import { captionsEnabled, translateCaption } from './captions.js';
 import { McpBridge, type FormAnswer } from './mcp.js';
 
 const port = Number(process.env.PORT ?? 4000);
@@ -17,14 +18,29 @@ function broadcast(event: Record<string, unknown>): void {
   for (const screen of screens) screen.write(data);
 }
 
-const mcp = new McpBridge(mcpUrl, form => broadcast({ type: 'form', ...form }));
+// A caption (what the person said or what Alexa says), followed by its translation when captions are on.
+let captionCount = 0;
+function caption(type: 'user' | 'say', text: string): void {
+  const id = ++captionCount;
+  broadcast({ type, id, text });
+  if (!captionsEnabled) return;
+  translateCaption(text)
+    .then(translation => translation && broadcast({ type: 'caption-translation', id, of: type, text: translation }))
+    .catch(error => console.error('caption translation failed:', (error as Error).message));
+}
+
+// Forms appear on screen and Alexa reads the first line of the question (the details stay on screen).
+const mcp = new McpBridge(mcpUrl, form => {
+  broadcast({ type: 'form', ...form });
+  caption('say', `${form.message.split('\n')[0]} Puede tocar Aceptar o decir sí.`);
+});
 const agent = new Agent(mcp, language, {
   toolCall: (name, args) => broadcast({ type: 'tool-call', name, args }),
   toolResult: async (name, args, result) => {
     const app = result.isError ? undefined : await mcp.appFor(name);
     broadcast({ type: 'tool-result', name, args, isError: result.isError === true, data: result.structuredContent ?? null, result, app });
   },
-  say: text => broadcast({ type: 'say', text })
+  say: text => caption('say', text)
 });
 
 let busy = false;
@@ -33,7 +49,7 @@ const yes = /^(s[ií]|claro|ok|okay|de acuerdo|gu[aá]rd[ae]lo|adelante|yes)(?!\
 const no = /^(no|cancela|cancelar|mejor no)(?!\p{L})/iu;
 
 async function handleUtterance(text: string): Promise<void> {
-  broadcast({ type: 'user', text });
+  caption('user', text);
   // A spoken yes/no answers a form that is on screen, with the choices already selected.
   const openForm = mcp.openFormId;
   if (openForm) {
@@ -44,7 +60,7 @@ async function handleUtterance(text: string): Promise<void> {
     }
   }
   if (busy) {
-    broadcast({ type: 'say', text: 'Un momento, sigo con lo anterior.' });
+    caption('say', 'Un momento, sigo con lo anterior.');
     return;
   }
   busy = true;
@@ -53,7 +69,7 @@ async function handleUtterance(text: string): Promise<void> {
     await agent.turn(text);
   } catch (error) {
     console.error(error);
-    broadcast({ type: 'say', text: 'Perdón, tuve un problema. ¿Me lo repite?' });
+    caption('say', 'Perdón, tuve un problema. ¿Me lo repite?');
   } finally {
     busy = false;
     broadcast({ type: 'thinking', on: false });
