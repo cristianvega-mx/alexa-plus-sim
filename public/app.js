@@ -205,6 +205,59 @@ function showResult(name, data, isError) {
   content.replaceChildren(card);
 }
 
+// ---------- MCP Apps (spec 2026-01-26): the server's own UI in a sandboxed iframe ----------
+
+const appProtocol = '2026-01-26';
+let activeApp = null;
+
+function showApp(event) {
+  const frame = el('iframe', { class: 'app-frame', sandbox: 'allow-scripts', title: event.name });
+  frame.srcdoc = event.app.html;
+  activeApp = { frame, event };
+  content.replaceChildren(frame);
+  logEntry('call', `↳ render ${event.app.uri}`);
+}
+
+window.addEventListener('message', message => {
+  if (!activeApp || message.source !== activeApp.frame.contentWindow) return;
+  const data = message.data;
+  if (!data || data.jsonrpc !== '2.0') return;
+  const post = payload => activeApp.frame.contentWindow.postMessage({ jsonrpc: '2.0', ...payload }, '*');
+  switch (data.method) {
+    case 'ui/initialize':
+      post({
+        id: data.id,
+        result: {
+          protocolVersion: appProtocol,
+          hostCapabilities: {},
+          hostInfo: { name: 'alexa-plus-sim', version: '0.1.0' },
+          hostContext: {
+            theme: 'dark',
+            locale: language,
+            displayMode: 'inline',
+            availableDisplayModes: ['inline'],
+            platform: 'web',
+            deviceCapabilities: { touch: true, hover: false }
+          }
+        }
+      });
+      logEntry('result', '↔ ui/initialize');
+      break;
+    case 'ui/notifications/initialized':
+      post({ method: 'ui/notifications/tool-input', params: { arguments: activeApp.event.args ?? {} } });
+      post({ method: 'ui/notifications/tool-result', params: activeApp.event.result });
+      logEntry('call', '→ ui/notifications/tool-result');
+      break;
+    case 'ui/notifications/size-changed':
+      activeApp.frame.style.height = `${Math.ceil(data.params?.height ?? 0)}px`;
+      break;
+    default:
+      if (data.id !== undefined && data.method) {
+        post({ id: data.id, error: { code: -32601, message: `${data.method} is not supported by this host` } });
+      }
+  }
+});
+
 // ---------- Forms from MCP elicitation ----------
 
 const openForms = new Map();
@@ -321,7 +374,8 @@ events.onmessage = message => {
       break;
     case 'tool-result':
       logEntry(event.isError ? 'fail' : 'result', `← ${event.name}${event.isError ? ' (error)' : ''}`, event.data);
-      showResult(event.name, event.data, event.isError);
+      if (event.app) showApp(event);
+      else showResult(event.name, event.data, event.isError);
       break;
     case 'form':
       logEntry('form', '← input_required · elicitation', { message: event.message, schema: event.schema });

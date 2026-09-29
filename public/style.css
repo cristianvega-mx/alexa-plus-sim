@@ -179,6 +179,16 @@ body {
   border-color: rgba(255, 122, 122, 0.5);
 }
 
+/* MCP Apps render inside the screen, sized by the app itself */
+.app-frame {
+  display: block;
+  width: 100%;
+  min-height: 120px;
+  border: 0;
+  background: transparent;
+  animation: rise 0.35s ease-out;
+}
+
 /* Confirmation forms (MCP elicitation) */
 .form-card {
   border-color: rgba(0, 202, 255, 0.55);

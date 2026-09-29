@@ -20,8 +20,10 @@ function broadcast(event: Record<string, unknown>): void {
 const mcp = new McpBridge(mcpUrl, form => broadcast({ type: 'form', ...form }));
 const agent = new Agent(mcp, language, {
   toolCall: (name, args) => broadcast({ type: 'tool-call', name, args }),
-  toolResult: (name, result) =>
-    broadcast({ type: 'tool-result', name, isError: result.isError === true, data: result.structuredContent ?? null }),
+  toolResult: async (name, args, result) => {
+    const app = result.isError ? undefined : await mcp.appFor(name);
+    broadcast({ type: 'tool-result', name, args, isError: result.isError === true, data: result.structuredContent ?? null, result, app });
+  },
   say: text => broadcast({ type: 'say', text })
 });
 

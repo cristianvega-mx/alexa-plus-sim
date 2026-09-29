@@ -15,7 +15,7 @@ const maxSteps = 8;
 
 export type AgentListener = {
   toolCall(name: string, args: Record<string, unknown>): void;
-  toolResult(name: string, result: CallToolResult): void;
+  toolResult(name: string, args: Record<string, unknown>, result: CallToolResult): void | Promise<void>;
   say(text: string): void;
 };
 
@@ -121,7 +121,7 @@ export class Agent {
         const args = (use.input ?? {}) as Record<string, unknown>;
         this.listener.toolCall(use.name!, args);
         const result = await this.mcp.callTool(use.name!, args);
-        this.listener.toolResult(use.name!, result);
+        await this.listener.toolResult(use.name!, args, result);
         results.push(toolResultBlock(use.toolUseId!, result));
       }
       this.messages.push({ role: 'user', content: results });
