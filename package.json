@@ -1,0 +1,26 @@
+{
+  "name": "alexa-plus-sim",
+  "version": "0.1.0",
+  "description": "An Echo Show-style Alexa+ simulator for testing MCP servers by voice: Amazon Bedrock agent, elicitation forms on screen, spoken answers.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "tsx --env-file-if-exists=.env src/server.ts",
+    "dev": "tsx watch --env-file-if-exists=.env src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1142.0",
+    "@modelcontextprotocol/client": "^2.2.0",
+    "@smithy/types": "^4.19.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.3",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}
